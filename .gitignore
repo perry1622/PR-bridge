@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+scripts/jobs/
+scripts/runtime.json
+plugin/ui.html
+*.log

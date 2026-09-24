@@ -1,0 +1,10 @@
+{
+  "taskId": "replace-with-unique-version-id",
+  "kind": "save_version",
+  "fileName": "REPLACE_WITH_CURRENT_FIGMA_FILE_NAME",
+  "pageId": "REPLACE_WITH_CURRENT_PAGE_ID",
+  "frameIds": ["REPLACE_WITH_TARGET_FRAME_ID"],
+  "clientId": "REPLACE_WITH_CURRENT_HEALTH_CLIENT_ID",
+  "title": "REPLACE_WITH_VERSION_TITLE",
+  "description": "REPLACE_WITH_SHORT_CHANGE_SUMMARY"
+}

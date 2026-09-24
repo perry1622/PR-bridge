@@ -1,0 +1,10 @@
+<script>
+const bridgeToken=__BRIDGE_TOKEN_JSON__;
+const clientId=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+let context=null,running=false;
+const send=m=>parent.postMessage({pluginMessage:m},'*');
+async function post(path,data){const r=await fetch('http://localhost:38473'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Bridge-Token':bridgeToken},body:JSON.stringify(data)});if(!r.ok)throw Error(await r.text());return r.json();}
+async function poll(){if(running||!context)return;running=true;try{const j=await post('/poll',{clientId,...context});if(j.jobId){send({type:'job',jobId:j.jobId,request:j.request});return;}}catch(e){}running=false;setTimeout(()=>send({type:'context'}),800);}
+onmessage=async e=>{const m=e.data.pluginMessage;if(!m)return;if(m.type==='context'){context=m.context;poll();}if(m.type==='result'){try{await post('/result',{clientId,...m});}catch(e){}running=false;send({type:'context'});}};
+send({type:'context'});
+</script>

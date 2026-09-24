@@ -1,0 +1,10 @@
+{
+  "taskId": "replace-with-unique-export-id",
+  "kind": "export",
+  "fileName": "REPLACE_WITH_CURRENT_FIGMA_FILE_NAME",
+  "pageId": "REPLACE_WITH_CURRENT_PAGE_ID",
+  "frameIds": ["REPLACE_WITH_TARGET_FRAME_ID"],
+  "clientId": "REPLACE_WITH_CURRENT_HEALTH_CLIENT_ID",
+  "depth": 3,
+  "scale": 1
+}

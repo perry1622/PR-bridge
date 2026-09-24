@@ -1,0 +1,13 @@
+{
+  "name": "Figma Codex Local Bridge",
+  "id": "codex-figma-desktop-bridge-public",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["http://localhost:38473"],
+    "reasoning": "Exchange scoped editing jobs with a broker on this computer."
+  }
+}
