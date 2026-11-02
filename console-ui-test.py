@@ -57,4 +57,3 @@ with sync_playwright() as p:
     assert not errors,errors
     print(json.dumps({'ui':'passed','errors':errors,'screenshots':str(out)},ensure_ascii=False))
     browser.close()
-
