@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR-bridge · 连接控制台</title><link rel="stylesheet" href="/app.css"></head>
+<body>
+<main id="overview"><header><a class="brand" href="/" aria-label="PR-bridge 首页"><span class="mark">pr<span>↗</span></span><span>PR-bridge</span></a><div class="sync"><span id="sync-text">正在连接…</span><button class="icon-btn" id="refresh" aria-label="刷新状态">↻</button><button class="primary" id="add-port">＋ 添加端口</button></div></header>
+
+<div id="error" role="alert" hidden></div>
+
+<section id="ports" class="panel"><div class="panel-heading"><h1>端口 <span id="port-count" class="count">0</span></h1><div class="metrics" aria-label="状态概览"><div><span>运行</span><strong id="service-count">—</strong></div><div title="有心跳，或当前有执行/排队请求；按客户端 ID 和端口统计"><span>活跃</span><strong id="agent-count">—</strong></div><div title="只在最近 60 条任务中出现，不能据此确认仍在线"><span>最近调用</span><strong id="recent-agent-count">—</strong></div><div><span>文件</span><strong id="file-count">—</strong></div><div><span>排队</span><strong id="queue-count">—</strong></div></div></div><div class="connection-scroll" tabindex="0" role="region" aria-label="端口连接表，可横向滚动"><table class="connections"><caption class="sr-only">端口、服务状态、Agent、Figma 文件、当前页面、任务与管理操作</caption><thead><tr><th scope="col">端口</th><th scope="col">服务状态</th><th scope="col">Agent</th><th scope="col">Figma 文件</th><th scope="col">当前页面</th><th scope="col">任务</th><th scope="col">操作</th></tr></thead><tbody id="connection-rows"></tbody></table></div></section></main>
+<dialog id="add-dialog"><form id="add-form"><div class="dialog-title"><h2>添加一个端口</h2><button type="button" class="icon-btn" data-close aria-label="关闭">×</button></div><label for="port-input">端口号</label><input id="port-input" name="port" type="number" min="1024" max="65535" value="38473" required><div class="dialog-actions"><button type="button" data-close>取消</button><button class="primary" type="submit">添加端口</button></div></form></dialog>
+<dialog id="setup-dialog"><div class="dialog-title"><h2>连接这个端口</h2><button class="icon-btn" data-close aria-label="关闭">×</button></div><p id="setup-target">只需导入一次，在插件内选择端口。</p><label for="manifest-path">统一 Figma 插件路径</label><textarea id="manifest-path" rows="3" readonly></textarea><button id="copy-path">复制路径</button><label for="mcp-config">Agent 的 MCP 配置</label><textarea id="mcp-config" rows="12" readonly></textarea><button id="copy-config">复制配置</button><p class="setup-note">新增端口后重开此插件加载端口列表；Agent 仍使用所选端口的配置。</p></dialog>
+<div id="toast" role="status" hidden></div><script type="module" src="/app.js"></script>
+</body></html>

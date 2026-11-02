@@ -1,0 +1,6 @@
+[mcp_servers.PR-bridge]
+command = "node"
+args = ["/absolute/path/to/PR-bridge/mcp-server.mjs"]
+
+[mcp_servers.PR-bridge.env]
+FIGMA_BRIDGE_URL = "http://127.0.0.1:38471"

@@ -1,6 +1,11 @@
+node_modules/
+console-data/
+console-checks/
+output/
+release/
+*.log
+.env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
-scripts/jobs/
-scripts/runtime.json
-plugin/ui.html
-*.log

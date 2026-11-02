@@ -1,0 +1,16 @@
+{
+  "name": "PR-bridge",
+  "id": "bobyapp-figma-local-bridge",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": [
+      "http://localhost:38471",
+      "http://localhost:38472"
+    ],
+    "reasoning": "Connect only to the local MCP bridge running on this computer."
+  }
+}

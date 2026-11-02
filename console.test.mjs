@@ -1,0 +1,71 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import net from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
+import { createConsoleServer } from './console-server.mjs';
+import { createBridgeServer } from './bridge-core.mjs';
+
+test('agent heartbeats, file ownership, queue telemetry and busy-stop protection', async t => {
+  const server = createBridgeServer({ managerToken:'test-only', pollMs:30 });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const post = (path,body,headers={}) => fetch(url+path,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)});
+  await post('/agents/heartbeat',{clientId:'design-agent',name:'Designer',pid:100});
+  await fetch(url+'/poll?session=one');
+  assert.equal((await post('/plugin/context',{session:'other',name:'wrong file'})).status,409);
+  await post('/plugin/context',{session:'one',name:'设计文件',pageName:'Page 1',pageId:'1:1'});
+  const pending = post('/command',{type:'current_page'},{'x-pr-bridge-client':'design-agent'});
+  await delay(20);
+  const command = await fetch(url+'/poll?session=one').then(r=>r.json());
+  const dashboard = await fetch(url+'/dashboard').then(r=>r.json());
+  assert.equal(dashboard.agents[0].busy,true);
+  assert.equal(dashboard.file.name,'设计文件');
+  assert.equal((await post('/admin/stop',{}, {'x-pr-manager':'wrong'})).status,403);
+  assert.equal((await post('/admin/stop',{}, {'x-pr-manager':'test-only'})).status,409);
+  assert.equal((await post('/plugin/disconnect',{session:'one'})).status,409);
+  await post('/result',{session:'one',id:command.id,ok:true,result:{private:'not logged'}}); await pending;
+  const history = (await fetch(url+'/dashboard').then(r=>r.json())).history;
+  assert.equal(history[0].outcome,'success'); assert.ok(!JSON.stringify(history).includes('private'));
+  await post('/agents/disconnect',{clientId:'design-agent'});
+  assert.equal((await fetch(url+'/dashboard').then(r=>r.json())).agents.length,0);
+  assert.equal((await post('/plugin/disconnect',{session:'wrong'})).status,409);
+  assert.equal((await post('/plugin/disconnect',{session:'one'})).status,200);
+  assert.equal((await fetch(url+'/health').then(r=>r.json())).pluginConnected,false);
+  assert.equal((await fetch(url+'/dashboard').then(r=>r.json())).file,null);
+});
+
+test('console adds, configures, starts and stops an owned port; rejects foreign web writes', async t=>{
+  const temp = await mkdtemp(join(tmpdir(),'pr-console-test-'));
+  const stateDir = pathToFileURL(temp+'/');
+  const server = await createConsoleServer({stateDir});
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const socket=net.createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));
+  const action=async(action,headers={})=>{const r=await fetch(url+'/api/action',{method:'POST',headers:{'content-type':'application/json','x-pr-console':'1',...headers},body:JSON.stringify({action,port})});return {status:r.status,body:await r.json()};};
+  assert.equal((await action('add',{origin:'https://unrelated.example'})).status,403);
+  assert.equal((await action('add')).status,200);
+  const setup=await action('prepare');assert.equal(setup.status,200);
+  const manifest=JSON.parse(await readFile(setup.body.manifestPath,'utf8'));
+  assert.ok(manifest.networkAccess.allowedDomains.includes(`http://localhost:${port}`));
+  assert.equal(manifest.name,'PR-bridge');
+  assert.equal((await action('prepare')).body.manifestPath,setup.body.manifestPath);
+  assert.ok((await readFile(new URL('plugins/PR-bridge/ui.html',stateDir),'utf8')).includes(String(port)));
+  let started=false;
+  try {
+    assert.equal((await action('start')).status,200);started=true;
+    const state=await fetch(url+'/api/state').then(r=>r.json());const b=state.bridges.find(b=>b.port===port);
+    assert.equal(b.managed,true);assert.equal(b.health.telemetryVersion,1);
+    assert.equal((await action('remove')).status,400);
+    assert.equal((await action('stop')).status,200);started=false;
+    await delay(300);
+    assert.equal((await action('remove')).status,200);
+    assert.ok(!JSON.parse(await readFile(new URL('ports.json',stateDir),'utf8')).includes(port));
+  } finally {if(started) await action('stop');}
+});

@@ -1,0 +1,11 @@
+import http from 'node:http';
+import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
+import { createBridgeServer } from './bridge-core.mjs';
+const a=createBridgeServer(),b=createBridgeServer();
+a.listen(0,'127.0.0.1');b.listen(0,'127.0.0.1');await Promise.all([once(a,'listening'),once(b,'listening')]);
+const ports=[a.address().port,b.address().port];
+const html=(await readFile(new URL('./figma-plugin/ui.html',import.meta.url),'utf8')).replace(/const allowedPorts = .*?; \/\/ PR_PORTS/,`const allowedPorts = ${JSON.stringify(ports)}; // PR_PORTS`);
+const ui=http.createServer((req,res)=>{res.setHeader('content-type','text/html');res.end(html);});
+ui.listen(0,'127.0.0.1');await once(ui,'listening');console.log(JSON.stringify({ports,ui:ui.address().port}));
+process.stdin.resume();process.stdin.on('end',()=>{for(const s of [a,b,ui]){s.closeAllConnections();s.close();}});

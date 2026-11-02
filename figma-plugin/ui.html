@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{font:12px 'Segoe UI','Microsoft YaHei',sans-serif;margin:16px;color:#28445f;background:linear-gradient(135deg,#f6faff,#e7f2ff)}h3{font-size:15px;margin:0 0 16px}label{font-size:11px;color:#5c7690;display:block;margin-bottom:6px}.controls{display:flex;gap:7px}select{min-width:0;flex:1}button,select{font:inherit;border:1px solid #bdd5ed;border-radius:7px;padding:7px 9px;color:#345c84;background:#fff}button{cursor:pointer;background:#ddecff}button:disabled{opacity:.5;cursor:not-allowed}:focus-visible{outline:2px solid #4a91de;outline-offset:2px}#status{margin-top:12px;padding:10px;background:#ffffffb0;border:1px solid #d4e3f1;border-radius:8px;line-height:1.5;overflow-wrap:anywhere}.bad{color:#995438}.muted{font-size:10px;color:#6c839a;margin-top:10px;line-height:1.5}
+</style></head>
+<body><h3>PR-bridge</h3><label for="port">连接端口</label><div class="controls"><select id="port" aria-label="连接端口"></select><button id="connect">连接</button><button id="disconnect" disabled>断开</button></div><div id="status" role="status">读取上次连接…</div><div class="muted">新增端口：在控制台点“配置”，然后重开此插件。</div>
+<script>
+const allowedPorts = [38471,38472]; // PR_PORTS
+const select = document.getElementById('port'), status = document.getElementById('status'), connectButton = document.getElementById('connect'), disconnectButton = document.getElementById('disconnect');
+for (const port of allowedPorts) { const option=document.createElement('option'); option.value=port; option.textContent=port; select.appendChild(option); }
+let link=null, activeRequest=null, switching=false, initialized=false;
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function setStatus(text,bad=false){status.textContent=text;status.className=bad?'bad':'';}
+function connectionError(error,port){
+ if(error.name==='TimeoutError' || /Failed to fetch|NetworkError|Load failed/i.test(error.message))return `无法连接 ${port}。先在控制台启动服务；已启动则重开插件并检查 Figma 本地网络权限。`;
+ return error.message;
+}
+function controls(){select.disabled=switching || !!activeRequest;connectButton.disabled=switching || !!activeRequest;disconnectButton.disabled=switching || !!activeRequest || !link;connectButton.textContent=link?'切换':'连接';}
+async function request(target,path,body){
+ const response=await fetch(target.url+path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...body,session:target.session}),signal:AbortSignal.timeout(5000)});
+ const result=await response.json();if(!response.ok)throw new Error(result.error || `HTTP ${response.status}`);return result;
+}
+async function poll(target){
+ while(link===target){
+  if(switching){await delay(25);continue;}
+  try{
+   target.pollAbort=new AbortController();
+   const response=await fetch(target.url+'/poll?session='+encodeURIComponent(target.session),{signal:AbortSignal.any([target.pollAbort.signal,AbortSignal.timeout(30000)])});
+   const envelope=await response.json();if(link!==target)return;
+   if(!response.ok)throw new Error(envelope.error || `HTTP ${response.status}`);
+   if(envelope.command){
+    activeRequest={id:envelope.id,target};controls();setStatus(`${target.port} · 正在执行`);
+    parent.postMessage({pluginMessage:{type:'bridge-command',id:envelope.id,command:envelope.command,deadlineAt:envelope.deadlineAt}},'*');return;
+   }
+   setStatus(`${target.port} · 已连接`);
+  }catch(error){if(link!==target)return;setStatus(connectionError(error,target.port),true);await delay(1500);}
+ }
+}
+async function disconnectCurrent(){
+ const old=link;if(!old)return;
+ await request(old,'/plugin/disconnect',{});
+ // Revoke the old poll only after the server atomically confirms no work remains.
+ if(activeRequest)throw new Error('任务正在执行，暂不能切换');
+ if(link===old){link=null;old.pollAbort?.abort();}
+}
+async function connect(){
+ if(switching || activeRequest)return;
+ const port=Number(select.value);if(!allowedPorts.includes(port))return;
+ if(link?.port===port){setStatus(`${port} · 已选择此端口`);return;}
+ switching=true;controls();
+ try{
+  const url=`http://localhost:${port}`;
+  const response=await fetch(url+'/health',{signal:AbortSignal.timeout(3000)});const health=await response.json();
+  if(!response.ok || health.service!=='PR-bridge' || health.protocol!==2)throw new Error('该端口不是 PR-bridge 服务');
+  if(health.pluginConnected)throw new Error('该端口已连接其他插件，请先断开');
+  await disconnectCurrent();
+  link={port,url,session:`${Date.now()}-${Math.random().toString(36).slice(2)}`};
+  parent.postMessage({pluginMessage:{type:'bridge-settings-save',port}},'*');
+  setStatus(`${port} · 正在连接`);poll(link);
+ }catch(error){setStatus(connectionError(error,port),true);}finally{switching=false;controls();}
+}
+connectButton.onclick=connect;
+disconnectButton.onclick=async()=>{if(switching || activeRequest)return;switching=true;controls();try{await disconnectCurrent();setStatus('已断开');}catch(error){setStatus(error.message,true);}finally{switching=false;controls();}};
+window.onmessage=async event=>{
+ const message=event.data.pluginMessage;if(!message)return;
+ if(message.type==='bridge-settings' && !initialized){initialized=true;select.value=allowedPorts.includes(message.port)?message.port:allowedPorts[0];connect();return;}
+ if(message.type==='bridge-settings-error'){setStatus('已连接，但无法保存上次端口',true);return;}
+ if(message.type==='bridge-context'){
+  const target=link;if(target)try{await request(target,'/plugin/context',message);if(link===target && !activeRequest && !switching)setStatus(`${target.port} · 已连接`);}catch{}return;
+ }
+ if(message.type!=='bridge-result' || !activeRequest || message.id!==activeRequest.id)return;
+ const pending=activeRequest;
+ for(let attempt=0;attempt<5;attempt++){
+  try{
+   await request(pending.target,'/result',{id:message.id,ok:message.ok,result:message.result,error:message.error});
+   activeRequest=null;controls();setStatus(`${pending.target.port} · 已连接`);if(link===pending.target)poll(pending.target);return;
+  }catch(error){setStatus('结果回传失败：'+error.message,true);await delay(1500);}
+ }
+ setStatus('结果未确认，连接已锁定。检查文件结果及服务后重开插件。',true);
+};
+setInterval(()=>{if(link)parent.postMessage({pluginMessage:{type:'bridge-context-request'}},'*');},5000);
+parent.postMessage({pluginMessage:{type:'bridge-settings-load'}},'*');
+</script></body></html>
