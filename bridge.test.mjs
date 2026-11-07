@@ -58,6 +58,27 @@ test("queued timeouts are removed and never execute later", async t => {
   assert.equal((await get("/poll?session=plugin")).body.command, null);
 });
 
+test("idle long-poll responses keep the plugin connected before its next poll", async t => {
+  const { get } = await fixture(t, { pollMs: 100, connectionGraceMs: 30 });
+  assert.equal((await get('/health')).body.pluginConnected, true);
+});
+
+test("completed long tasks allow an immediate next command before plugin repoll", async t => {
+  const {get,post}=await fixture(t,{pollMs:100,connectionGraceMs:30});
+  const first=post('/command',{type:'status'});
+  await until(async()=>(await get('/health')).body.queuedCommands===1);
+  const delivered=(await get('/poll?session=plugin')).body;
+  await delay(60);
+  await post('/result',{id:delivered.id,session:'plugin',ok:true,result:{}});
+  assert.equal((await first).status,200);
+  assert.equal((await get('/health')).body.pluginConnected,true);
+  const next=post('/command',{type:'status'});
+  await until(async()=>(await get('/health')).body.queuedCommands===1);
+  const second=(await get('/poll?session=plugin')).body;
+  await post('/result',{id:second.id,session:'plugin',ok:true,result:{}});
+  assert.equal((await next).status,200);
+});
+
 test("execution timeout blocks subsequent edits until late result arrives", async t => {
   const { get, post } = await fixture(t, { timeoutMs: 150 });
   const call = post("/command", { type: "rename_node" });

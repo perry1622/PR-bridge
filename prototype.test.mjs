@@ -24,7 +24,7 @@ async function plugin() {
   document.children.push(page);
   const nodes = new Map([[document.id, document], [page.id, page]]);
   function node(id, parent, type = "FRAME") {
-    const result = { id, name: id, type, parent, visible: true, children: [], overflowDirection: "NONE", scrollBehavior: "SCROLLS", reactions: [],
+    const result = { id, name: id, type, parent, visible: true, children: [], overflowDirection: "NONE", numberOfFixedChildren: 0, reactions: [],
       overlayPositionType: "CENTER", overlayBackground: { type: "NONE" }, overlayBackgroundInteraction: "NONE",
       async setReactionsAsync(value) {
         // Model asynchronous native validation: a bad transition fails only at write time.
@@ -126,12 +126,12 @@ test("scroll and page background read back; invalid settings leave the file unch
   const f = await plugin();
   const result = await f.apply([
     { op: "set_scroll", nodeId: "first", overflowDirection: "VERTICAL" },
-    { op: "set_scroll", nodeId: "button", scrollBehavior: "FIXED" },
+    { op: "set_fixed_children", nodeId: "first", count: 1 },
     { op: "set_prototype_background", color: { r: 0.1, g: 0.2, b: 0.3 }, opacity: 0.5 },
   ]);
   assert.equal(result.ok, true);
   assert.equal(f.first.overflowDirection, "VERTICAL");
-  assert.equal(f.button.scrollBehavior, "FIXED");
+  assert.equal(f.first.numberOfFixedChildren, 1);
   const read = await f.run({ type: "get_prototype", nodeIds: ["page"], depth: 3 });
   assert.deepEqual(read.result.nodes[0].prototypeBackgrounds, [{ type: "SOLID", color: { r: 0.1, g: 0.2, b: 0.3 }, opacity: 0.5 }]);
   for (const bad of [{ op: "set_scroll", nodeId: "first", overflowDirection: "WRONG" }, { op: "set_prototype_background", color: { r: 255, g: 0, b: 0 } }]) {
@@ -216,7 +216,7 @@ test("MCP exposes and forwards prototype tools through the bridge", { timeout: 1
     });
   }
   const initialized = await call("initialize", {});
-  assert.equal(initialized.serverInfo.version, "2.2.0");
+  assert.equal(initialized.serverInfo.version, "2.2.1");
   const listed = await call("tools/list", {});
   assert.ok(listed.tools.some(tool => tool.name === "figma_get_prototype"));
   assert.ok(listed.tools.some(tool => tool.name === "figma_apply_prototype"));

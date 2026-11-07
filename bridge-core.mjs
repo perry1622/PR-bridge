@@ -1,12 +1,12 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 
-export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, managerToken = process.env.PR_BRIDGE_MANAGER_TOKEN } = {}) {
+export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, connectionGraceMs = 8000, managerToken = process.env.PR_BRIDGE_MANAGER_TOKEN } = {}) {
   const queue = [], pending = new Map(), polls = new Set(), completed = new Set();
   const clients = new Map(), history = [];
   let file = null, shuttingDown = false;
-  let active = null, owner = null, lastPollAt = 0;
-  const connected = () => !!owner && (polls.size > 0 || !!active || Date.now() - lastPollAt < 8000);
+  let active = null, owner = null, lastPluginAt = 0;
+  const connected = () => !!owner && (polls.size > 0 || !!active || Date.now() - lastPluginAt < connectionGraceMs);
   function json(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
     res.writeHead(status, {
@@ -64,6 +64,7 @@ export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, manager
       if (req.method === "POST" && url.pathname === "/plugin/context") {
         const body = await readBody(req);
         if (body.session !== owner) return json(res, 409, { error: "Wrong plugin session" });
+        lastPluginAt = Date.now();
         file = { name: String(body.name || "未命名文件").slice(0, 200), fileKey: typeof body.fileKey === "string" ? body.fileKey.slice(0, 200) : null, pageName: String(body.pageName || "").slice(0, 200), pageId: String(body.pageId || "").slice(0, 100), updatedAt: Date.now() };
         return json(res, 200, { ok: true });
       }
@@ -72,7 +73,7 @@ export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, manager
         if (body.session !== owner) return json(res, 409, { error: "插件连接已变化，请重新打开插件" });
         if (active || pending.size) return json(res, 409, { error: "当前端口有执行或排队任务，完成后才能切换" });
         for (const poll of [...polls]) poll.send({ command: null });
-        owner = null; file = null; lastPollAt = 0;
+        owner = null; file = null; lastPluginAt = 0;
         return json(res, 200, { ok: true });
       }
       if (req.method === "GET" && url.pathname === "/dashboard") {
@@ -95,7 +96,7 @@ export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, manager
       }
       if (req.method === "GET" && url.pathname === "/health") {
         return json(res, 200, {
-          ok: true, service: "PR-bridge", version: "2.2.0", protocol: 2, telemetryVersion: 1,
+          ok: true, service: "PR-bridge", version: "2.2.1", protocol: 2, telemetryVersion: 1,
           port: server.address().port, pid: process.pid, pluginConnected: connected(),
           queuedCommands: queue.length, pendingCommands: pending.size,
           activeClients: new Set([...pending.values(), ...(active ? [active] : [])].map(x => x.clientId)).size,
@@ -109,8 +110,8 @@ export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, manager
         }
         if (owner !== session) file = null;
         owner = session;
-        lastPollAt = Date.now();
-        const poll = { send: body => { cleanup(); json(res, 200, body); } };
+        lastPluginAt = Date.now();
+        const poll = { send: body => { lastPluginAt = Date.now(); cleanup(); json(res, 200, body); } };
         const timer = setTimeout(() => poll.send({ command: null }), pollMs);
         function cleanup() { clearTimeout(timer); polls.delete(poll); }
         res.on("close", cleanup);
@@ -142,6 +143,7 @@ export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, manager
         if ((body.session || "legacy") !== owner) return json(res, 409, { ok: false, error: "Wrong plugin session" });
         if (completed.has(body.id)) return json(res, 200, { ok: true });
         if (!active || active.id !== body.id) return json(res, 404, { ok: false, error: "Unknown command id" });
+        lastPluginAt = Date.now();
         finish(active, 200, body);
         completed.add(body.id);
         if (completed.size > 256) completed.delete(completed.values().next().value);

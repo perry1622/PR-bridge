@@ -212,9 +212,10 @@ function inspectNode(node, depth, counter) {
   if ("clipsContent" in node) result.clipsContent = node.clipsContent;
   if ("absoluteBoundingBox" in node) result.absoluteBoundingBox = node.absoluteBoundingBox;
   if (counter.includePrototype) {
-    for (const key of ["reactions", "overflowDirection", "scrollBehavior", "flowStartingPoints", "prototypeBackgrounds", "overlayPositionType", "overlayBackground", "overlayBackgroundInteraction"]) {
+    for (const key of ["reactions", "overflowDirection", "scrollBehavior", "numberOfFixedChildren", "constraints", "flowStartingPoints", "prototypeBackgrounds", "overlayPositionType", "overlayBackground", "overlayBackgroundInteraction"]) {
       if (key in node) result[key] = wireValue(node[key]);
     }
+    if ("numberOfFixedChildren" in node && "children" in node) result.fixedChildIds=node.children.slice(Math.max(0,node.children.length-node.numberOfFixedChildren)).map(child=>child.id);
     if ("prototypeStartNode" in node) result.prototypeStartNode = nodeSummary(node.prototypeStartNode);
   }
   if ("strokeWeight" in node) result.strokeWeight = node.strokeWeight;
@@ -291,6 +292,7 @@ async function findNodes(input) {
 const prototypeCapabilities = {
   version: 1, read: true, reactions: true, flowStartingPoints: true,
   scroll: true, background: true, devicePresets: false, overlaySettingsWrite: false,
+  viewportAudit: true, viewportFit: true, fixedChildren: true,
 };
 
 function belongsTo(node, ancestor) {
@@ -301,6 +303,61 @@ function belongsTo(node, ancestor) {
 }
 
 function jsonCopy(value) { return JSON.parse(JSON.stringify(value)); }
+
+function auditPrototypeViewport(node, viewportWidth, viewportHeight) {
+  if (![viewportWidth, viewportHeight].every(value => Number.isFinite(value) && value > 0 && value <= 10000)) throw new Error("Viewport width and height must be between 0 and 10000");
+  const targetHeight = node.width * viewportHeight / viewportWidth;
+  return { nodeId: node.id, width: node.width, height: node.height, viewportWidth, viewportHeight, targetHeight,
+    matches: Math.abs(node.height - targetHeight) <= 0.5,
+    overflowPixels: Math.max(0, node.height - targetHeight) * viewportWidth / node.width };
+}
+
+// Pure layout planning is shared with local repair tools and tests. No device preset is guessed.
+function planPrototypeViewport(frame, operation) {
+  if (frame.type !== "FRAME" || frame.layoutMode && frame.layoutMode !== "NONE") throw new Error("fit_viewport requires a frame without auto layout");
+  const audit = auditPrototypeViewport(frame, operation.viewportWidth, operation.viewportHeight);
+  if (!Number.isFinite(audit.targetHeight) || audit.targetHeight < 1 || audit.targetHeight > 100000) throw new Error("Resulting viewport height is out of range");
+  const index = new Map(), parents = new Map(), origins = new Map();
+  function visit(node, parent, x, y) {
+    index.set(node.id, node); parents.set(node.id, parent); origins.set(node.id, { x, y });
+    for (const child of node.children || []) visit(child, node, x + child.x, y + child.y);
+  }
+  visit(frame, null, 0, 0);
+  function ids(value, label) {
+    if (!Array.isArray(value) || value.length > 200 || value.some(id => typeof id !== "string" || !index.has(id))) throw new Error(label + " must contain at most 200 IDs inside the target frame");
+    if (new Set(value).size !== value.length) throw new Error(label + " contains duplicate IDs");
+    return value;
+  }
+  const viewportIds = operation.viewportNodeIds === undefined ? [...index.values()].filter(node => {
+    const origin = origins.get(node.id);
+    return ["FRAME", "RECTANGLE"].includes(node.type) && Math.abs(origin.x) < 0.5 && Math.abs(origin.y) < 0.5 && Math.abs(node.width-frame.width) < 0.5 && Math.abs(node.height-frame.height) < 0.5;
+  }).map(node => node.id) : ids(operation.viewportNodeIds, "viewportNodeIds");
+  if (!viewportIds.includes(frame.id)) viewportIds.unshift(frame.id);
+  const viewportSet = new Set(viewportIds);
+  const scrollIds = ids(operation.scrollContainerIds || [], "scrollContainerIds");
+  const bottomIds = ids(operation.bottomNodeIds || [], "bottomNodeIds");
+  const delta = audit.targetHeight-frame.height, changes = [];
+  const anchors = operation.constrainAnchors !== false;
+  for (const id of viewportIds) {
+    const node = index.get(id), origin = origins.get(id);
+    if (!["FRAME", "RECTANGLE"].includes(node.type) || node.layoutMode && node.layoutMode !== "NONE" || Math.abs(origin.x)>0.5 || Math.abs(origin.y)>0.5 || Math.abs(node.width-frame.width)>0.5 || Math.abs(node.height-frame.height)>0.5) throw new Error("Viewport layers must match the original full frame: " + id);
+    changes.push({nodeId:id,property:"dimensions",value:{width:node.width,height:audit.targetHeight}});
+    if (anchors && id !== frame.id && "constraints" in node) changes.push({nodeId:id,property:"constraints",value:{horizontal:"STRETCH",vertical:"STRETCH"}});
+  }
+  for (const id of scrollIds) {
+    const node=index.get(id), parent=parents.get(id);
+    if (viewportSet.has(id) || node.type!=="FRAME" || !parent || !viewportSet.has(parent.id) || node.layoutMode && node.layoutMode!=="NONE" || node.height+delta<1) throw new Error("Scroll containers must be direct frame children of a viewport layer: " + id);
+    changes.push({nodeId:id,property:"dimensions",value:{width:node.width,height:node.height+delta}});
+    if (anchors && "constraints" in node) changes.push({nodeId:id,property:"constraints",value:{horizontal:"STRETCH",vertical:"STRETCH"}});
+  }
+  for (const id of bottomIds) {
+    const node=index.get(id), parent=parents.get(id);
+    if (viewportSet.has(id) || scrollIds.includes(id) || !parent || !viewportSet.has(parent.id) || node.y+delta<0) throw new Error("Bottom layers must be direct children of a viewport layer: " + id);
+    changes.push({nodeId:id,property:"y",value:node.y+delta});
+    if (anchors && "constraints" in node) changes.push({nodeId:id,property:"constraints",value:{...node.constraints,vertical:"MAX"}});
+  }
+  return {audit,delta,changes};
+}
 
 async function applyPrototype(command, deadlineAt) {
   if (typeof command.pageId !== "string" || !command.pageId.trim()) throw new Error("apply_prototype requires pageId");
@@ -356,6 +413,18 @@ async function applyPrototype(command, deadlineAt) {
         seen.add(node.id);
       }
       prepared.push({ node: page, property: "flowStartingPoints", value: jsonCopy(operation.startingPoints), makeDefault: operation.makeDefault === true });
+    } else if (operation.op === "fit_viewport") {
+      const frame = await scopedNode(operation.nodeId);
+      const layout = planPrototypeViewport(frame, operation);
+      for (const change of layout.changes) {
+        const node = await scopedNode(change.nodeId);
+        if (change.property === "dimensions" && ("children" in node ? typeof node.resizeWithoutConstraints !== "function" : typeof node.resize !== "function")) throw new Error("Node cannot be resized without changing child constraints: " + node.id);
+        prepared.push({node,property:change.property,value:change.value});
+      }
+    } else if (operation.op === "set_fixed_children") {
+      const node = await scopedNode(operation.nodeId);
+      if (!("numberOfFixedChildren" in node) || !Array.isArray(node.children) || !Number.isInteger(operation.count) || operation.count < 0 || operation.count > node.children.length) throw new Error("Fixed child count must be between 0 and the frame child count");
+      prepared.push({node,property:"numberOfFixedChildren",value:operation.count});
     } else if (operation.op === "set_scroll") {
       const node = await scopedNode(operation.nodeId);
       if (operation.overflowDirection === undefined && operation.scrollBehavior === undefined) throw new Error("set_scroll requires overflowDirection or scrollBehavior");
@@ -364,7 +433,8 @@ async function applyPrototype(command, deadlineAt) {
         prepared.push({ node, property: "overflowDirection", value: operation.overflowDirection });
       }
       if (operation.scrollBehavior !== undefined) {
-        if (!("scrollBehavior" in node) || !["SCROLLS", "FIXED", "STICKY"].includes(operation.scrollBehavior)) throw new Error("Invalid scrollBehavior or unsupported node");
+        if (!("scrollBehavior" in node)) throw new Error("This Figma API uses numberOfFixedChildren; use set_fixed_children on the parent frame instead of scrollBehavior");
+        if (!["SCROLLS", "FIXED", "STICKY"].includes(operation.scrollBehavior)) throw new Error("Invalid scrollBehavior");
         prepared.push({ node, property: "scrollBehavior", value: operation.scrollBehavior });
       }
     } else if (operation.op === "set_prototype_background") {
@@ -377,11 +447,24 @@ async function applyPrototype(command, deadlineAt) {
       throw new Error("Unsupported prototype operation: " + operation.op);
     }
   }
+  const viewportRequested=command.viewportWidth !== undefined || command.viewportHeight !== undefined;
+  if (viewportRequested) {
+    for (const root of roots) {
+      const planned=prepared.filter(item=>item.node.id===root.id && item.property==="dimensions").slice(-1)[0];
+      const geometry=planned ? {id:root.id,...planned.value} : root;
+      if (!auditPrototypeViewport(geometry,command.viewportWidth,command.viewportHeight).matches) throw new Error("Prototype frame does not match the declared viewport; apply fit_viewport first: "+root.id);
+    }
+  }
   const previous = [], results = [], mutatedNodeIds = new Set();
   const initialFlows = jsonCopy(page.flowStartingPoints);
-  const initialValues = new Map(prepared.map(item => [item.node.id + "/" + item.property, jsonCopy(item.node[item.property])]));
+  const valueOf = (node, property) => property === "dimensions" ? {width:node.width,height:node.height} : node[property];
+  const initialValues = new Map(prepared.map(item => [item.node.id + "/" + item.property, jsonCopy(valueOf(item.node,item.property))]));
   const assign = async (node, property, value) => {
     if (property === "reactions") await node.setReactionsAsync(value);
+    else if (property === "dimensions") {
+      if ("children" in node) node.resizeWithoutConstraints(value.width,value.height);
+      else node.resize(value.width,value.height);
+    }
     else node[property] = value;
   };
   try {
@@ -399,7 +482,7 @@ async function applyPrototype(command, deadlineAt) {
       previous.push({ nodeId: item.node.id, property: item.property, value: initialValues.get(item.node.id + "/" + item.property) });
       await assign(item.node, item.property, value);
       mutatedNodeIds.add(item.node.id);
-      results.push({ nodeId: item.node.id, property: item.property, value: wireValue(item.node[item.property]) });
+      results.push({ nodeId: item.node.id, property: item.property, value: wireValue(valueOf(item.node,item.property)) });
     }
     checkDeadline(deadlineAt);
   } catch (error) {
@@ -420,7 +503,7 @@ async function applyPrototype(command, deadlineAt) {
     previous.push({ nodeId: page.id, property: "flowStartingPoints", value: initialFlows });
     results.push({ nodeId: page.id, property: "flowStartingPoints", value: wireValue(page.flowStartingPoints) });
   }
-  return { pageId: page.id, mutatedNodeIds: [...mutatedNodeIds], results, previous, capabilities: prototypeCapabilities };
+  return { pageId: page.id, mutatedNodeIds: [...mutatedNodeIds], results, previous, capabilities: prototypeCapabilities, viewportCheck:viewportRequested?"checked":"not_requested" };
 }
 
 async function executeOperation(operation, deadlineAt) {
@@ -517,7 +600,7 @@ async function execute(command, deadlineAt) {
 
   if (command.type === "status") {
     return {
-      pluginVersion: "2.2.0",
+      pluginVersion: "2.2.1",
       prototypeCapabilities,
       fileKey: figma.fileKey || null,
       currentPage: nodeSummary(figma.currentPage),
@@ -541,6 +624,8 @@ async function execute(command, deadlineAt) {
   if (command.type === "find_nodes") return findNodes(command);
 
   if (command.type === "inspect_nodes" || command.type === "get_prototype") {
+    const viewportRequested=command.viewportWidth !== undefined || command.viewportHeight !== undefined;
+    if (viewportRequested) auditPrototypeViewport({id:"validation",width:1,height:1},command.viewportWidth,command.viewportHeight);
     if (!Array.isArray(command.nodeIds) || command.nodeIds.length < 1 || command.nodeIds.length > 20 || command.nodeIds.some(id => typeof id !== "string" || !id.trim())) throw new Error("nodeIds must contain 1 to 20 non-empty node IDs");
     const ids = command.nodeIds;
     const depth = command.depth === undefined ? 4 : command.depth;
@@ -548,7 +633,7 @@ async function execute(command, deadlineAt) {
     if (!Number.isInteger(depth) || depth < 0 || depth > 12) throw new Error("depth must be an integer between 0 and 12");
     if (!Number.isInteger(maxNodes) || maxNodes < 1 || maxNodes > 10000) throw new Error("maxNodes must be an integer between 1 and 10000");
     const counter = { count: 0, depth, maxNodes, truncated: false, deadlineAt, includePrototype: command.type === "get_prototype" || command.includePrototype === true };
-    const nodes = [];
+    const nodes = [], viewportAudits = [];
     for (const id of ids) {
       checkDeadline(deadlineAt);
       if (counter.count >= maxNodes) {
@@ -558,6 +643,7 @@ async function execute(command, deadlineAt) {
       }
       const node = await figma.getNodeByIdAsync(id);
       if (node && node.type === "PAGE" && typeof node.loadAsync === "function") await node.loadAsync();
+      if (viewportRequested && node && node.type === "FRAME") viewportAudits.push(auditPrototypeViewport(node,command.viewportWidth,command.viewportHeight));
       nodes.push(node ? inspectNode(node, 0, counter) : { id, missing: true });
     }
     return wireValue({
@@ -567,6 +653,8 @@ async function execute(command, deadlineAt) {
       truncated: counter.truncated,
       limits: { depth, maxNodes },
       ...(counter.includePrototype ? { prototypeCapabilities } : {}),
+      viewportAudit: viewportRequested ? viewportAudits : null,
+      viewportCheck: viewportRequested ? "checked" : "not_requested",
       nodes,
     });
   }

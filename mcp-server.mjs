@@ -29,6 +29,8 @@ const toolDefinitions = [
         depth: { type: "integer", minimum: 0, maximum: 12, default: 4, description: "子图层读取深度，0 只读目标本身" },
         maxNodes: { type: "integer", minimum: 1, maximum: 10000, default: 2000, description: "本次读取的节点总数上限" },
         includePrototype: { type: "boolean", default: false, description: "同时读取交互、流程起点、滚动和原型背景" },
+        viewportWidth: {type:"number",exclusiveMinimum:0,maximum:10000},
+        viewportHeight: {type:"number",exclusiveMinimum:0,maximum:10000},
       },
       required: ["nodeIds"],
       additionalProperties: false,
@@ -36,38 +38,49 @@ const toolDefinitions = [
   },
   {
     name: "figma_get_prototype",
-    description: "读取原型交互 reactions（触发器、动作、目标、过渡）、流程起点、滚动、背景和只读覆盖层设置。设备外框预设不受支持。最多 20 个目标；检查 missing/truncated。",
+    description: "读取原型交互、流程、滚动、固定子层、约束和覆盖层设置。制作手机原型时显式传 viewportWidth/viewportHeight 检查画框比例与裁切风险；未传时 viewportCheck=not_requested。设备预设仍不可读取。最多 20 个目标；检查 missing/truncated。",
     inputSchema: {
       type: "object",
       properties: {
         nodeIds: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1 } },
         depth: { type: "integer", minimum: 0, maximum: 12, default: 4 },
         maxNodes: { type: "integer", minimum: 1, maximum: 10000, default: 2000 },
+        viewportWidth: {type:"number",exclusiveMinimum:0,maximum:10000},
+        viewportHeight: {type:"number",exclusiveMinimum:0,maximum:10000},
       },
       required: ["nodeIds"], additionalProperties: false,
     },
   },
   {
     name: "figma_apply_prototype",
-    description: "在明确页面及 scopeFrameIds 内读写原型：set_reactions、set_flow_starting_points、set_scroll、set_prototype_background。先校验所有目标，原生写入失败时尝试恢复之前的值；返回 previous 便于留存。流程起点保留范围外的既有起点。背景作用于整页。设备外框、覆盖层位置/遮罩设置不支持写入。",
+    description: "在页面及画框范围内设置原型交互、流程、滚动、固定子层、视口适配和背景。手机原型请显式传 viewportWidth/viewportHeight，比例不匹配时在写入前拒绝。fit_viewport 保持宽度及字体尺寸，调整声明的底栏/滚动区域。返回 previous 和回读结果，失败时尝试恢复。设备预设不支持读写。",
     inputSchema: {
       type: "object",
       properties: {
         pageId: { type: "string", minLength: 1 },
         expectedFileName: { type: "string", description: "可选的目标文件名检查" },
+        viewportWidth: {type:"number",exclusiveMinimum:0,maximum:10000},
+        viewportHeight: {type:"number",exclusiveMinimum:0,maximum:10000},
         scopeFrameIds: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1 } },
         operations: {
           type: "array", minItems: 1, maxItems: 200,
           items: {
             type: "object",
             properties: {
-              op: { type: "string", enum: ["set_reactions", "set_flow_starting_points", "set_scroll", "set_prototype_background"] },
+              op: { type: "string", enum: ["set_reactions", "set_flow_starting_points", "set_scroll", "set_fixed_children", "fit_viewport", "set_prototype_background"] },
               nodeId: { type: "string" },
               reactions: { type: "array", maxItems: 100, items: { type: "object" } },
               startingPoints: { type: "array", maxItems: 100, items: { type: "object", properties: { nodeId: { type: "string" }, name: { type: "string" } }, required: ["nodeId", "name"], additionalProperties: false } },
               makeDefault: { type: "boolean", default: false },
               overflowDirection: { type: "string", enum: ["NONE", "HORIZONTAL", "VERTICAL", "BOTH"] },
-              scrollBehavior: { type: "string", enum: ["SCROLLS", "FIXED", "STICKY"] },
+              scrollBehavior: { type: "string", enum: ["SCROLLS", "FIXED", "STICKY"],description:"兼容字段；标准 Figma API 请用 set_fixed_children，缺少原生属性时会明确报错" },
+              count: {type:"integer",minimum:0},
+              viewportWidth: {type:"number",exclusiveMinimum:0,maximum:10000},
+              viewportHeight: {type:"number",exclusiveMinimum:0,maximum:10000},
+              viewportNodeIds: {type:"array",maxItems:200,items:{type:"string"}},
+              scrollContainerIds: {type:"array",maxItems:200,items:{type:"string"}},
+              bottomNodeIds: {type:"array",maxItems:200,items:{type:"string"}},
+              constrainAnchors: {type:"boolean",default:true},
               color: { type: "object", properties: { r: { type: "number", minimum: 0, maximum: 1 }, g: { type: "number", minimum: 0, maximum: 1 }, b: { type: "number", minimum: 0, maximum: 1 } }, required: ["r", "g", "b"], additionalProperties: false },
               opacity: { type: "number", minimum: 0, maximum: 1 },
             },
@@ -202,7 +215,7 @@ async function handle(message) {
     return reply(message.id, {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "PR-bridge", version: "2.2.0" },
+      serverInfo: { name: "PR-bridge", version: "2.2.1" },
     });
   }
 
@@ -216,7 +229,7 @@ async function handle(message) {
       await ready();
       let result;
       if (name === "figma_inspect_nodes") {
-        result = await callBridge({ type: "inspect_nodes", nodeIds: args.nodeIds, depth: args.depth, maxNodes: args.maxNodes, includePrototype: args.includePrototype });
+        result = await callBridge({ type: "inspect_nodes", nodeIds: args.nodeIds, depth: args.depth, maxNodes: args.maxNodes, includePrototype: args.includePrototype, viewportWidth:args.viewportWidth, viewportHeight:args.viewportHeight });
       } else if (name === "figma_get_prototype") {
         result = await callBridge({ type: "get_prototype", ...args });
       } else if (name === "figma_apply_prototype") {
