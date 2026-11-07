@@ -378,6 +378,8 @@ async function applyPrototype(command, deadlineAt) {
     }
   }
   const previous = [], results = [], mutatedNodeIds = new Set();
+  const initialFlows = jsonCopy(page.flowStartingPoints);
+  const initialValues = new Map(prepared.map(item => [item.node.id + "/" + item.property, jsonCopy(item.node[item.property])]));
   const assign = async (node, property, value) => {
     if (property === "reactions") await node.setReactionsAsync(value);
     else node[property] = value;
@@ -394,7 +396,7 @@ async function applyPrototype(command, deadlineAt) {
         }
         value = item.makeDefault ? [...item.value, ...preserved] : [...preserved, ...item.value];
       }
-      previous.push({ nodeId: item.node.id, property: item.property, value: jsonCopy(item.node[item.property]) });
+      previous.push({ nodeId: item.node.id, property: item.property, value: initialValues.get(item.node.id + "/" + item.property) });
       await assign(item.node, item.property, value);
       mutatedNodeIds.add(item.node.id);
       results.push({ nodeId: item.node.id, property: item.property, value: wireValue(item.node[item.property]) });
@@ -406,7 +408,17 @@ async function applyPrototype(command, deadlineAt) {
       try { await assign(await getNode(before.nodeId), before.property, before.value); }
       catch (rollbackError) { rollbackErrors.push(before.nodeId + ": " + rollbackError.message); }
     }
+    // Native reaction writes may create a flow start implicitly. Restore it after restoring reactions.
+    if (previous.length) {
+      try { page.flowStartingPoints = initialFlows; }
+      catch (rollbackError) { rollbackErrors.push(page.id + " flows: " + rollbackError.message); }
+    }
     throw new Error("Prototype update failed: " + error.message + (rollbackErrors.length ? "; rollback incomplete, inspect before retrying: " + rollbackErrors.join("; ") : "; earlier changes restored"));
+  }
+  if (JSON.stringify(page.flowStartingPoints) !== JSON.stringify(initialFlows) && !results.some(item => item.property === "flowStartingPoints")) {
+    mutatedNodeIds.add(page.id);
+    previous.push({ nodeId: page.id, property: "flowStartingPoints", value: initialFlows });
+    results.push({ nodeId: page.id, property: "flowStartingPoints", value: wireValue(page.flowStartingPoints) });
   }
   return { pageId: page.id, mutatedNodeIds: [...mutatedNodeIds], results, previous, capabilities: prototypeCapabilities };
 }

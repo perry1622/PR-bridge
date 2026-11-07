@@ -32,6 +32,11 @@ async function plugin() {
         calls.push(id);
         if (value.some(reaction => reaction.actions?.some(action => action.transition?.duration < 0))) throw new Error("Native transition rejected");
         this.reactions = plain(value);
+        if (value.length) {
+          let root = this;
+          while (root.parent !== page) root = root.parent;
+          if (!page.flowStartingPoints.some(point => point.nodeId === root.id)) page.flowStartingPoints = [...page.flowStartingPoints, { nodeId: root.id, name: "Flow 1" }];
+        }
       },
     };
     parent.children.push(result);
@@ -80,7 +85,7 @@ test("prototype writes await native reactions, return before values and can remo
   const result = await f.apply([{ op: "set_reactions", nodeId: "button", reactions: navigation("second") }]);
   assert.equal(result.ok, true);
   assert.deepEqual(f.button.reactions, navigation("second"));
-  assert.deepEqual(result.result.mutatedNodeIds, ["button"]);
+  assert.deepEqual(result.result.mutatedNodeIds, ["button", "page"]);
   assert.deepEqual(result.result.previous[0], { nodeId: "button", property: "reactions", value: before });
   const read = await f.run({ type: "get_prototype", nodeIds: ["button"], depth: 0 });
   assert.deepEqual(read.result.nodes[0].reactions, navigation("second"));
@@ -161,6 +166,23 @@ test("expired prototype requests do not mutate the file", async () => {
   assert.deepEqual(f.calls, []);
 });
 
+test("implicit native flow starts are backed up and restored even without a flow operation", async () => {
+  const f = await plugin();
+  const flows = plain(f.page.flowStartingPoints);
+  const write = await f.apply([{ op: "set_reactions", nodeId: "button", reactions: navigation("second") }]);
+  assert.equal(write.ok, true);
+  assert.deepEqual(write.result.previous.find(item => item.property === "flowStartingPoints").value, flows);
+  const fresh = await plugin();
+  const invalid = navigation("first");
+  invalid[0].actions[0].transition.duration = -1;
+  const failed = await fresh.apply([
+    { op: "set_reactions", nodeId: "button", reactions: navigation("second") },
+    { op: "set_reactions", nodeId: "second", reactions: invalid },
+  ]);
+  assert.equal(failed.ok, false);
+  assert.deepEqual(plain(fresh.page.flowStartingPoints), flows);
+});
+
 test("MCP exposes and forwards prototype tools through the bridge", { timeout: 10000 }, async t => {
   const f = await plugin();
   const server = createServer(async (req, res) => {
@@ -202,6 +224,6 @@ test("MCP exposes and forwards prototype tools through the bridge", { timeout: 1
   assert.equal(JSON.parse(read.content[0].text).nodes[0].reactions.length, 1);
   const write = await call("tools/call", { name: "figma_apply_prototype", arguments: { pageId: "page", scopeFrameIds: ["first", "second"], operations: [{ op: "set_reactions", nodeId: "button", reactions: navigation("second") }] } });
   assert.equal(write.isError, undefined);
-  assert.deepEqual(JSON.parse(write.content[0].text).mutatedNodeIds, ["button"]);
+  assert.deepEqual(JSON.parse(write.content[0].text).mutatedNodeIds, ["button", "page"]);
   assert.deepEqual(f.button.reactions, navigation("second"));
 });
