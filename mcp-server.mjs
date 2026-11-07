@@ -28,9 +28,54 @@ const toolDefinitions = [
         nodeIds: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1 }, description: "需要读取的节点 ID，最多 20 个" },
         depth: { type: "integer", minimum: 0, maximum: 12, default: 4, description: "子图层读取深度，0 只读目标本身" },
         maxNodes: { type: "integer", minimum: 1, maximum: 10000, default: 2000, description: "本次读取的节点总数上限" },
+        includePrototype: { type: "boolean", default: false, description: "同时读取交互、流程起点、滚动和原型背景" },
       },
       required: ["nodeIds"],
       additionalProperties: false,
+    },
+  },
+  {
+    name: "figma_get_prototype",
+    description: "读取原型交互 reactions（触发器、动作、目标、过渡）、流程起点、滚动、背景和只读覆盖层设置。设备外框预设不受支持。最多 20 个目标；检查 missing/truncated。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        nodeIds: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1 } },
+        depth: { type: "integer", minimum: 0, maximum: 12, default: 4 },
+        maxNodes: { type: "integer", minimum: 1, maximum: 10000, default: 2000 },
+      },
+      required: ["nodeIds"], additionalProperties: false,
+    },
+  },
+  {
+    name: "figma_apply_prototype",
+    description: "在明确页面及 scopeFrameIds 内读写原型：set_reactions、set_flow_starting_points、set_scroll、set_prototype_background。先校验所有目标，原生写入失败时尝试恢复之前的值；返回 previous 便于留存。流程起点保留范围外的既有起点。背景作用于整页。设备外框、覆盖层位置/遮罩设置不支持写入。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pageId: { type: "string", minLength: 1 },
+        expectedFileName: { type: "string", description: "可选的目标文件名检查" },
+        scopeFrameIds: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1 } },
+        operations: {
+          type: "array", minItems: 1, maxItems: 200,
+          items: {
+            type: "object",
+            properties: {
+              op: { type: "string", enum: ["set_reactions", "set_flow_starting_points", "set_scroll", "set_prototype_background"] },
+              nodeId: { type: "string" },
+              reactions: { type: "array", maxItems: 100, items: { type: "object" } },
+              startingPoints: { type: "array", maxItems: 100, items: { type: "object", properties: { nodeId: { type: "string" }, name: { type: "string" } }, required: ["nodeId", "name"], additionalProperties: false } },
+              makeDefault: { type: "boolean", default: false },
+              overflowDirection: { type: "string", enum: ["NONE", "HORIZONTAL", "VERTICAL", "BOTH"] },
+              scrollBehavior: { type: "string", enum: ["SCROLLS", "FIXED", "STICKY"] },
+              color: { type: "object", properties: { r: { type: "number", minimum: 0, maximum: 1 }, g: { type: "number", minimum: 0, maximum: 1 }, b: { type: "number", minimum: 0, maximum: 1 } }, required: ["r", "g", "b"], additionalProperties: false },
+              opacity: { type: "number", minimum: 0, maximum: 1 },
+            },
+            required: ["op"], additionalProperties: false,
+          },
+        },
+      },
+      required: ["pageId", "scopeFrameIds", "operations"], additionalProperties: false,
     },
   },
   {
@@ -157,7 +202,7 @@ async function handle(message) {
     return reply(message.id, {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "PR-bridge", version: "2.1.0" },
+      serverInfo: { name: "PR-bridge", version: "2.2.0" },
     });
   }
 
@@ -171,7 +216,11 @@ async function handle(message) {
       await ready();
       let result;
       if (name === "figma_inspect_nodes") {
-        result = await callBridge({ type: "inspect_nodes", nodeIds: args.nodeIds, depth: args.depth, maxNodes: args.maxNodes });
+        result = await callBridge({ type: "inspect_nodes", nodeIds: args.nodeIds, depth: args.depth, maxNodes: args.maxNodes, includePrototype: args.includePrototype });
+      } else if (name === "figma_get_prototype") {
+        result = await callBridge({ type: "get_prototype", ...args });
+      } else if (name === "figma_apply_prototype") {
+        result = await callBridge({ type: "apply_prototype", ...args });
       } else if (name === "figma_export_frame") {
         result = await callBridge({ type: "export_frame", nodeId: args.nodeId, scale: args.scale, maxDimension: args.maxDimension });
         return reply(message.id, { content: exportImageContent(result) });

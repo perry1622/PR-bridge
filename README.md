@@ -4,6 +4,8 @@
 
 本机 Figma MCP 工具与连接控制台。多个 Agent 共用队列，一个 Figma 插件切换不同端口，表格展示端口、调用客户端、文件和任务。
 
+**v2.2.0** 新增 Prototype 读写：交互连线、触发器、跳转与过渡、流程起点、滚动和原型背景。原有协议与端口配置兼容，不增加 npm 依赖。
+
 ## 快速开始
 
 需要 **Node.js 22+**、Figma Desktop。当前桥接与控制台不需要安装 npm 依赖。Windows 提供双击启动入口；其他系统可使用 Node 命令，尚未做真实桌面验收。
@@ -59,13 +61,15 @@ node start-console.mjs
 | `figma_current_page` | 当前页面和选中节点 |
 | `figma_find_nodes` | 按名称或类型查找节点 |
 | `figma_inspect_nodes` | 回读文字、字体、颜色、布局及子节点 |
+| `figma_get_prototype` | 回读原型交互、流程起点、滚动、背景及覆盖层设置 |
+| `figma_apply_prototype` | 在指定画框范围内设置原型交互、起点和滚动，可设置整页原型背景 |
 | `figma_export_frame` | 导出 PNG 并返回 MCP 图片内容 |
 | `figma_create_page` | 创建页面 |
 | `figma_rename_node` | 重命名节点 |
 | `figma_delete_node` | 删除节点 |
 | `figma_apply_operations` | 按顺序执行一批编辑 |
 
-明确填写 `pageId`、`parentId`、`nodeId`，避免其他 Agent 切换页面造成误写。同端口串行处理请求，但不会自动解决两个 Agent 对同一节点的内容冲突。批量操作出错不自动回滚之前已完成的编辑。
+明确填写 `pageId`、`parentId`、`nodeId`，避免其他 Agent 切换页面造成误写。同端口串行处理请求，但不会自动解决两个 Agent 对同一节点的内容冲突。普通 `figma_apply_operations` 批量操作出错不自动回滚之前已完成的编辑；原型接口的恢复行为见下文。
 
 ```json
 {"pageId":"123:456","operations":[{"op":"create_text","text":"标题","fontFamily":"Inter","fontStyle":"Regular"}]}
@@ -82,6 +86,52 @@ node start-console.mjs
 ```json
 {"nodeId":"123:456","scale":1,"maxDimension":2048}
 ```
+
+## Prototype 读写
+
+先用 `figma_get_prototype` 读取已有画框及其子图层。返回原生 `reactions`，包含 `trigger`、`actions`、目标和过渡；页面节点还返回 `flowStartingPoints`、`prototypeBackgrounds` 和只读的 `prototypeStartNode`。节点不存在或读取被截断时会明确标记。`figma_inspect_nodes` 也可传入 `includePrototype: true`。
+
+```json
+{"nodeIds":["123:100","123:200"],"depth":8,"maxNodes":4000}
+```
+
+用 `figma_apply_prototype` 写入。`pageId` 与 `scopeFrameIds` 必填，源节点、NODE 动作的目标节点及流程起点都必须在范围内；可用 `expectedFileName` 核对连接文件。以下示例将按钮连接到第二个画框，并添加流程起点：
+
+```json
+{
+  "pageId": "123:456",
+  "scopeFrameIds": ["123:100", "123:200"],
+  "operations": [
+    {
+      "op": "set_reactions",
+      "nodeId": "123:101",
+      "reactions": [{
+        "trigger": {"type": "ON_CLICK"},
+        "actions": [{
+          "type": "NODE", "destinationId": "123:200", "navigation": "NAVIGATE",
+          "transition": {"type": "DISSOLVE", "duration": 0.2, "easing": {"type": "EASE_OUT"}}
+        }]
+      }]
+    },
+    {"op": "set_flow_starting_points", "startingPoints": [{"nodeId": "123:100", "name": "手机交互演示"}]}
+  ]
+}
+```
+
+- `set_reactions` 使用 Figma 原生触发器、动作和过渡格式，例如导航、打开覆盖层、返回和关闭；`duration` 单位为秒。它替换该节点整组交互，先读取再编辑；`reactions: []` 清空该节点交互。
+- `set_flow_starting_points` 替换声明范围内的起点，保留范围外的已有起点及默认顺序。传入 `makeDefault: true` 才将新起点排在最前；空数组移除范围内起点。
+- `set_scroll` 接受 `nodeId`，以及 `overflowDirection`（`NONE/HORIZONTAL/VERTICAL/BOTH`）和/或 `scrollBehavior`（`SCROLLS/FIXED/STICKY`）。
+- `set_prototype_background` 接受 `color: {r,g,b}`（0–1）及可选的 `opacity`。**此设置作用于整页原型**。
+
+接口先检查全部目标与范围，再调用 Figma 原生 setter；原生格式错误会在写入时被 Figma 拒绝。返回值包含 `mutatedNodeIds`、回读的 `results` 和写入前的 `previous`，便于保存恢复依据。写入失败时尝试按相反顺序恢复已触及的属性，失败会明确报告 `rollback incomplete`。这不是 Figma 原子事务；超时、插件失联或恢复失败后仍须回读实际结果，不能盲目重试。
+
+**边界：设备外框预设（例如 iPhone 18 Pro）不支持读写；覆盖层的位置、遮罩与点击遮罩行为可读取，不能通过此接口设置。** 打开覆盖层的交互动作本身可以读写。设置后应回读节点，并在 Figma 播放视图检查真实操作和设备显示。
+
+### 从旧版升级
+
+更新仓库后，控制台生成的插件副本也需更新：在控制台点击该端口的“配置”，或重新启动控制台生成副本。确认端口队列空闲，再关闭并重新运行 Figma 中的 PR-bridge，选择原端口。MCP 客户端重载后可发现新增工具；现有协议 2 服务能继续转发新命令，不必为了加载插件脚本重启桥接服务。
+
+`POST /command` 的 `{"type":"status"}` 返回实际加载插件的 `pluginVersion` 和 `prototypeCapabilities`；服务 `/health` 中的版本只代表服务进程版本。未重新运行的旧插件不会因磁盘文件更新自动获得新能力。
 
 ## 连接与状态
 
@@ -102,8 +152,10 @@ node start-console.mjs
 ## 验证
 
 ```sh
-node --test bridge.test.mjs console.test.mjs
+node --test bridge.test.mjs console.test.mjs prototype.test.mjs
 ```
+
+Prototype 测试覆盖读写与回读、删除交互、范围校验、保留已有流程、滚动/背景、原生写入失败恢复和 MCP 转发。模拟测试不代替真实 Figma 中的交互预览验收。
 
 浏览器测试是可选开发工具：需要 Python、Playwright 及其 Chromium；也可用 `PR_BROWSER_PATH` 指定本机浏览器可执行文件。
 

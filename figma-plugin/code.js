@@ -211,6 +211,12 @@ function inspectNode(node, depth, counter) {
   if ("strokes" in node) result.strokes = Array.isArray(node.strokes) ? node.strokes.map(paintSummary) : node.strokes;
   if ("clipsContent" in node) result.clipsContent = node.clipsContent;
   if ("absoluteBoundingBox" in node) result.absoluteBoundingBox = node.absoluteBoundingBox;
+  if (counter.includePrototype) {
+    for (const key of ["reactions", "overflowDirection", "scrollBehavior", "flowStartingPoints", "prototypeBackgrounds", "overlayPositionType", "overlayBackground", "overlayBackgroundInteraction"]) {
+      if (key in node) result[key] = wireValue(node[key]);
+    }
+    if ("prototypeStartNode" in node) result.prototypeStartNode = nodeSummary(node.prototypeStartNode);
+  }
   if ("strokeWeight" in node) result.strokeWeight = node.strokeWeight;
   if ("strokeAlign" in node) result.strokeAlign = node.strokeAlign;
   if ("cornerRadius" in node) result.cornerRadius = node.cornerRadius;
@@ -280,6 +286,129 @@ async function findNodes(input) {
     if (matches.length >= maxResults) break;
   }
   return matches;
+}
+
+const prototypeCapabilities = {
+  version: 1, read: true, reactions: true, flowStartingPoints: true,
+  scroll: true, background: true, devicePresets: false, overlaySettingsWrite: false,
+};
+
+function belongsTo(node, ancestor) {
+  for (let current = node; current; current = current.parent) {
+    if (current.id === ancestor.id) return true;
+  }
+  return false;
+}
+
+function jsonCopy(value) { return JSON.parse(JSON.stringify(value)); }
+
+async function applyPrototype(command, deadlineAt) {
+  if (typeof command.pageId !== "string" || !command.pageId.trim()) throw new Error("apply_prototype requires pageId");
+  const page = await getNode(command.pageId);
+  if (page.type !== "PAGE") throw new Error("pageId must identify a PAGE");
+  if (command.expectedFileName !== undefined && command.expectedFileName !== figma.root.name) throw new Error("Target file name changed; inspect the connected file before editing");
+  if (!Array.isArray(command.scopeFrameIds) || command.scopeFrameIds.length < 1 || command.scopeFrameIds.length > 100 || command.scopeFrameIds.some(id => typeof id !== "string" || !id.trim())) throw new Error("scopeFrameIds must contain 1 to 100 frame IDs");
+  if (!Array.isArray(command.operations) || command.operations.length < 1 || command.operations.length > 200) throw new Error("operations must contain 1 to 200 prototype operations");
+  const roots = [];
+  for (const id of new Set(command.scopeFrameIds)) {
+    const root = await getNode(id);
+    if (!["FRAME", "COMPONENT", "INSTANCE", "GROUP"].includes(root.type) || !belongsTo(root, page)) throw new Error("Scope frame is not on the declared page: " + id);
+    roots.push(root);
+  }
+  const inScope = node => roots.some(root => belongsTo(node, root));
+  const scopedNode = async id => {
+    if (typeof id !== "string" || !id.trim()) throw new Error("Prototype target requires a node ID");
+    const node = await getNode(id);
+    if (!inScope(node)) throw new Error("Prototype node is outside scopeFrameIds: " + id);
+    return node;
+  };
+  const checkAction = async action => {
+    if (!action || typeof action.type !== "string") throw new Error("Each prototype action requires type");
+    if (action.type === "NODE" && action.destinationId != null) await scopedNode(action.destinationId);
+    if (action.type === "CONDITIONAL") {
+      for (const block of action.conditionalBlocks || []) {
+        for (const child of block.actions || []) await checkAction(child);
+      }
+    }
+  };
+  const prepared = [];
+  // Validate every target and scope before the first mutation. Figma validates native reaction values.
+  for (const operation of command.operations) {
+    checkDeadline(deadlineAt);
+    if (!operation || typeof operation.op !== "string") throw new Error("Prototype operation requires op");
+    if (operation.op === "set_reactions") {
+      const node = await scopedNode(operation.nodeId);
+      if (typeof node.setReactionsAsync !== "function") throw new Error("Node does not support reactions: " + node.id);
+      if (!Array.isArray(operation.reactions) || operation.reactions.length > 100) throw new Error("reactions must be an array with at most 100 entries; use [] to remove interactions");
+      for (const reaction of operation.reactions) {
+        if (!reaction || typeof reaction !== "object" || !("trigger" in reaction)) throw new Error("Each reaction requires trigger");
+        const actions = reaction.actions === undefined ? (reaction.action ? [reaction.action] : []) : reaction.actions;
+        if (!Array.isArray(actions)) throw new Error("Reaction actions must be an array");
+        for (const action of actions) await checkAction(action);
+      }
+      prepared.push({ node, property: "reactions", value: jsonCopy(operation.reactions) });
+    } else if (operation.op === "set_flow_starting_points") {
+      if (!Array.isArray(operation.startingPoints) || operation.startingPoints.length > 100) throw new Error("startingPoints must be an array with at most 100 entries");
+      const seen = new Set();
+      for (const point of operation.startingPoints) {
+        const node = await scopedNode(point && point.nodeId);
+        if (node.type !== "FRAME" || typeof point.name !== "string" || !point.name.trim() || seen.has(node.id)) throw new Error("Flow starting points require unique FRAME nodeIds and non-empty names");
+        seen.add(node.id);
+      }
+      prepared.push({ node: page, property: "flowStartingPoints", value: jsonCopy(operation.startingPoints), makeDefault: operation.makeDefault === true });
+    } else if (operation.op === "set_scroll") {
+      const node = await scopedNode(operation.nodeId);
+      if (operation.overflowDirection === undefined && operation.scrollBehavior === undefined) throw new Error("set_scroll requires overflowDirection or scrollBehavior");
+      if (operation.overflowDirection !== undefined) {
+        if (!("overflowDirection" in node) || !["NONE", "HORIZONTAL", "VERTICAL", "BOTH"].includes(operation.overflowDirection)) throw new Error("Invalid overflowDirection or unsupported node");
+        prepared.push({ node, property: "overflowDirection", value: operation.overflowDirection });
+      }
+      if (operation.scrollBehavior !== undefined) {
+        if (!("scrollBehavior" in node) || !["SCROLLS", "FIXED", "STICKY"].includes(operation.scrollBehavior)) throw new Error("Invalid scrollBehavior or unsupported node");
+        prepared.push({ node, property: "scrollBehavior", value: operation.scrollBehavior });
+      }
+    } else if (operation.op === "set_prototype_background") {
+      const color = operation.color;
+      if (!color || ["r", "g", "b"].some(key => typeof color[key] !== "number" || !Number.isFinite(color[key]) || color[key] < 0 || color[key] > 1)) throw new Error("Prototype background color requires r/g/b between 0 and 1");
+      const opacity = operation.opacity === undefined ? 1 : operation.opacity;
+      if (typeof opacity !== "number" || !Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new Error("Prototype background opacity must be between 0 and 1");
+      prepared.push({ node: page, property: "prototypeBackgrounds", value: [{ type: "SOLID", color: { r: color.r, g: color.g, b: color.b }, opacity }] });
+    } else {
+      throw new Error("Unsupported prototype operation: " + operation.op);
+    }
+  }
+  const previous = [], results = [], mutatedNodeIds = new Set();
+  const assign = async (node, property, value) => {
+    if (property === "reactions") await node.setReactionsAsync(value);
+    else node[property] = value;
+  };
+  try {
+    for (const item of prepared) {
+      checkDeadline(deadlineAt);
+      let value = item.value;
+      if (item.property === "flowStartingPoints") {
+        const preserved = [];
+        for (const point of item.node.flowStartingPoints) {
+          const existing = await figma.getNodeByIdAsync(point.nodeId);
+          if (!existing || !inScope(existing)) preserved.push(point);
+        }
+        value = item.makeDefault ? [...item.value, ...preserved] : [...preserved, ...item.value];
+      }
+      previous.push({ nodeId: item.node.id, property: item.property, value: jsonCopy(item.node[item.property]) });
+      await assign(item.node, item.property, value);
+      mutatedNodeIds.add(item.node.id);
+      results.push({ nodeId: item.node.id, property: item.property, value: wireValue(item.node[item.property]) });
+    }
+    checkDeadline(deadlineAt);
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const before of previous.slice().reverse()) {
+      try { await assign(await getNode(before.nodeId), before.property, before.value); }
+      catch (rollbackError) { rollbackErrors.push(before.nodeId + ": " + rollbackError.message); }
+    }
+    throw new Error("Prototype update failed: " + error.message + (rollbackErrors.length ? "; rollback incomplete, inspect before retrying: " + rollbackErrors.join("; ") : "; earlier changes restored"));
+  }
+  return { pageId: page.id, mutatedNodeIds: [...mutatedNodeIds], results, previous, capabilities: prototypeCapabilities };
 }
 
 async function executeOperation(operation, deadlineAt) {
@@ -376,6 +505,8 @@ async function execute(command, deadlineAt) {
 
   if (command.type === "status") {
     return {
+      pluginVersion: "2.2.0",
+      prototypeCapabilities,
       fileKey: figma.fileKey || null,
       currentPage: nodeSummary(figma.currentPage),
       selection: figma.currentPage.selection.map(nodeSummary),
@@ -397,14 +528,14 @@ async function execute(command, deadlineAt) {
 
   if (command.type === "find_nodes") return findNodes(command);
 
-  if (command.type === "inspect_nodes") {
+  if (command.type === "inspect_nodes" || command.type === "get_prototype") {
     if (!Array.isArray(command.nodeIds) || command.nodeIds.length < 1 || command.nodeIds.length > 20 || command.nodeIds.some(id => typeof id !== "string" || !id.trim())) throw new Error("nodeIds must contain 1 to 20 non-empty node IDs");
     const ids = command.nodeIds;
     const depth = command.depth === undefined ? 4 : command.depth;
     const maxNodes = command.maxNodes === undefined ? 2000 : command.maxNodes;
     if (!Number.isInteger(depth) || depth < 0 || depth > 12) throw new Error("depth must be an integer between 0 and 12");
     if (!Number.isInteger(maxNodes) || maxNodes < 1 || maxNodes > 10000) throw new Error("maxNodes must be an integer between 1 and 10000");
-    const counter = { count: 0, depth, maxNodes, truncated: false, deadlineAt };
+    const counter = { count: 0, depth, maxNodes, truncated: false, deadlineAt, includePrototype: command.type === "get_prototype" || command.includePrototype === true };
     const nodes = [];
     for (const id of ids) {
       checkDeadline(deadlineAt);
@@ -423,9 +554,12 @@ async function execute(command, deadlineAt) {
       nodeCount: counter.count,
       truncated: counter.truncated,
       limits: { depth, maxNodes },
+      ...(counter.includePrototype ? { prototypeCapabilities } : {}),
       nodes,
     });
   }
+
+  if (command.type === "apply_prototype") return applyPrototype(command, deadlineAt);
 
   if (command.type === "create_page") {
     const page = figma.createPage();

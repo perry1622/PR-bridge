@@ -1,6 +1,6 @@
 {
   "name": "pr-bridge",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "description": "Local Figma MCP bridge with multi-agent queues and a connection console",
@@ -12,6 +12,6 @@
     "console": "node console-server.mjs",
     "bridge": "node start-shared.mjs",
     "mcp": "node mcp-server.mjs",
-    "test": "node --test bridge.test.mjs console.test.mjs"
+    "test": "node --test bridge.test.mjs console.test.mjs prototype.test.mjs"
   }
 }
