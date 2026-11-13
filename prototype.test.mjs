@@ -216,7 +216,8 @@ test("MCP exposes and forwards prototype tools through the bridge", { timeout: 1
     });
   }
   const initialized = await call("initialize", {});
-  assert.equal(initialized.serverInfo.version, "2.2.1");
+  const packageInfo = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
+  assert.equal(initialized.serverInfo.version, packageInfo.version);
   const listed = await call("tools/list", {});
   assert.ok(listed.tools.some(tool => tool.name === "figma_get_prototype"));
   assert.ok(listed.tools.some(tool => tool.name === "figma_apply_prototype"));
