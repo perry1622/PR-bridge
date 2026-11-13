@@ -75,6 +75,26 @@ node start-console.mjs
 {"pageId":"123:456","operations":[{"op":"create_text","text":"标题","fontFamily":"Inter","fontStyle":"Regular"}]}
 ```
 
+`create_vector` 创建可继续用钢笔工具编辑的原生矢量，默认无描边，支持闭合贝塞尔路径、线性渐变和原生投影。`parentId` 必填；`paths` 使用 SVG 路径数据和 `NONZERO/EVENODD/NONE` 填充规则。`status.vectorCapabilities` 可确认运行中的插件是否已加载此能力；更新脚本后须重新打开插件，无需重启端口服务。
+
+```json
+{"pageId":"123:456","operations":[{"op":"create_vector","parentId":"123:100","name":"蓝色曲面","paths":[{"windingRule":"NONZERO","data":"M 0 0 C 0 100 150 240 300 300 L 800 300 L 800 0 Z"}],"fill":"#3276A3","shadow":{"color":"#203443","opacity":0.32,"x":-10,"y":2,"radius":25}}]}
+```
+
+投影与路径可通过 `figma_inspect_nodes` 回读。创建时若原生路径校验失败，该次刚创建的矢量会被清理；整批操作仍不是事务，须检查已有结果。
+
+`clone_text` 从指定原文字节点原生复制，再修改内容，保留字体、字号、行高、填充、字距和文本框设置。声明 `sourceNodeId` 和 `parentId`；`mirrorFromSource:true` 根据目标父框宽度镜像位置并切换左右对齐，保持字形正向。源字体不可用时会在复制前停止。`status.textCapabilities.clone` 用于确认运行中的插件已加载该接口。
+
+```json
+{"pageId":"123:456","operations":[{"op":"clone_text","sourceNodeId":"123:101","parentId":"123:200","characters":"产品PPT","mirrorFromSource":true}]}
+```
+
+`clone_frame` 原生复制已有页面级画框，保留图片裁切、旋转、文字字体和矢量效果。必须指定 `sourceNodeId`、源页面 `sourceParentId` 与目标页面 `parentId`；可用 `expectedSourceWidth/expectedSourceHeight` 防止按过期尺寸复制。返回完整 `createdNodeIds` 和源节点到复制节点的 `nodeMap`，便于只调整新副本。传入 `width/height` 时使用 `resizeWithoutConstraints`，子图层保持原始尺寸，后续按布局需要调整。`status.cloneCapabilities.pageFrames` 可确认已加载此接口。
+
+```json
+{"pageId":"123:456","operations":[{"op":"clone_frame","sourceNodeId":"123:100","sourceParentId":"123:456","parentId":"123:456","expectedSourceWidth":1800,"expectedSourceHeight":300,"width":1600,"height":400,"x":1800,"y":43600,"name":"横幅 01｜1600×400"}]}
+```
+
 节点回读默认深度 4、总计 2000 个节点；支持深度 0–12、总节点数 1–10000，最多 20 个目标。留意 `missing`、`truncated` 及混合字体标记。
 
 ```json

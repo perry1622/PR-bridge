@@ -1,4 +1,3 @@
-import os
 from playwright.sync_api import sync_playwright, expect
 from pathlib import Path
 import socket, json
@@ -8,7 +7,7 @@ with socket.socket() as sock:
     sock.bind(('127.0.0.1',0))
     port=sock.getsockname()[1]
 with sync_playwright() as p:
-    browser=p.chromium.launch(**({'executable_path':os.environ['PR_BROWSER_PATH']} if os.environ.get('PR_BROWSER_PATH') else {}),headless=True)
+    browser=p.chromium.launch(executable_path=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',headless=True)
     page=browser.new_page(viewport={'width':1440,'height':900})
     errors=[]
     page.on('pageerror',lambda error:errors.append(str(error)))

@@ -1,8 +1,8 @@
-# Claude Code 接入
+# Claude Code 接入 PR-bridge
 
-1. 在控制台启动目标端口，点击该行“配置”。
-2. 将生成的 MCP 配置合并到客户端设置，重载 MCP。
-3. 导入统一 Figma 插件，在目标文件中选择相同端口。
-4. 先读取并核对文件、页面和节点 ID，再执行编辑；完成后回读验证。
+1. 将 `claude-code.mcp.json` 中的 `PR-bridge` 配置合并到 Claude Code 的 MCP 配置；若已有指向本目录的旧名称条目，将其替换，避免重复注册。
+2. 在 Figma Desktop 导入 `figma-plugin/manifest.json`，运行 **PR-bridge**。
+3. 重载 MCP，调用 `figma_status`。第一次工具调用自动启动共享后台服务，随后多个 Agent 共用它。
+4. 确认 `pluginConnected: true` 后操作。协作时使用明确的 `pageId`、`parentId` 和 `nodeId`。
 
-仓库中的 claude-code.mcp.json 为模板，需替换成克隆目录的绝对路径。无需 npm 安装依赖。
+需要 Node.js 22 或更新版本，无需安装 npm 依赖。详细协作范围和故障处理见 README.md。

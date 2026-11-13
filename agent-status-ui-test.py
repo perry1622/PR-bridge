@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 import json,time
@@ -10,7 +9,7 @@ bridge={'port':38473,'status':'running','managed':True,
         'dashboard':{'agents':[],'queue':[],'history':[],'file':{'name':'测试文件','pageName':'Page 1','pageId':'1:1'}}}
 snapshot={'updatedAt':now,'bridges':[bridge]}
 with sync_playwright() as p:
-    browser=p.chromium.launch(**({'executable_path':os.environ['PR_BROWSER_PATH']} if os.environ.get('PR_BROWSER_PATH') else {}),headless=True)
+    browser=p.chromium.launch(executable_path=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',headless=True)
     page=browser.new_page(viewport={'width':1200,'height':800})
     errors=[]
     page.on('pageerror',lambda e:errors.append(str(e)))

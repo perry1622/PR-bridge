@@ -12,6 +12,6 @@
     "console": "node console-server.mjs",
     "bridge": "node start-shared.mjs",
     "mcp": "node mcp-server.mjs",
-    "test": "node --test bridge.test.mjs console.test.mjs prototype.test.mjs viewport.test.mjs"
+    "test": "node --test bridge.test.mjs console.test.mjs prototype.test.mjs viewport.test.mjs effects.test.mjs frame-clone.test.mjs text-clone.test.mjs vector.test.mjs"
   }
 }

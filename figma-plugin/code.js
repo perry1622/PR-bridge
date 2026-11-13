@@ -141,6 +141,117 @@ async function createNode(operation, deadlineAt) {
   return nodeSummary(node);
 }
 
+// Native closed/open Bezier paths, with no arbitrary script execution.
+async function createVector(operation, deadlineAt) {
+  if (!operation.parentId) throw new Error("create_vector requires an explicit parentId");
+  if (!Array.isArray(operation.paths) || !operation.paths.length || operation.paths.length > 100) throw new Error("paths must contain 1 to 100 vector paths");
+  const paths = operation.paths.map(path => {
+    if (!path || typeof path.data !== "string" || !path.data.trim() || path.data.length > 100000) throw new Error("Invalid or oversized vector path");
+    const windingRule = path.windingRule || "NONZERO";
+    if (!["NONZERO", "EVENODD", "NONE"].includes(windingRule)) throw new Error("Invalid vector winding rule");
+    return { windingRule, data: path.data };
+  });
+  const color = value => {
+    if (typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value)) throw new Error("Vector colors must use #RRGGBB");
+    return colorFromHex(value);
+  };
+  const bounded = (value, fallback, min, max, label) => {
+    const number = value === undefined ? fallback : value;
+    if (typeof number !== "number" || !Number.isFinite(number) || number < min || number > max) throw new Error("Invalid vector " + label);
+    return number;
+  };
+  let fills = [{ type: "SOLID", color: color(operation.fill || "#000000") }];
+  if (operation.gradientStops !== undefined) {
+    if (!Array.isArray(operation.gradientStops) || operation.gradientStops.length < 2 || operation.gradientStops.length > 20) throw new Error("gradientStops must contain 2 to 20 stops");
+    const gradientStops = operation.gradientStops.map(stop => ({ position: bounded(stop.position, undefined, 0, 1, "gradient position"), color: { ...color(stop.color), a: bounded(stop.opacity, 1, 0, 1, "gradient opacity") } }));
+    if (gradientStops.some((stop, index) => index && stop.position < gradientStops[index - 1].position)) throw new Error("gradientStops must be sorted");
+    fills = [{ type: "GRADIENT_LINEAR", gradientStops, gradientTransform: [[1, 0, 0], [0, 1, 0]] }];
+  }
+  const shadow = operation.shadow;
+  const effects = shadow ? [{ type: "DROP_SHADOW", color: { ...color(shadow.color || "#102D3F"), a: bounded(shadow.opacity, 0.3, 0, 1, "shadow opacity") }, offset: { x: bounded(shadow.x, -8, -500, 500, "shadow x"), y: bounded(shadow.y, 1, -500, 500, "shadow y") }, radius: bounded(shadow.radius, 18, 0, 500, "shadow radius"), spread: 0, visible: true, blendMode: "NORMAL" }] : [];
+  const parent = await parentFor(operation.parentId);
+  checkDeadline(deadlineAt);
+  const node = figma.createVector();
+  try {
+    parent.appendChild(node);
+    node.vectorPaths = paths;
+    applyCommon(node, operation);
+    node.fills = fills;
+    node.strokes = [];
+    node.effects = effects;
+    return { ...nodeSummary(node), pathCount: node.vectorPaths.length, effects: wireValue(node.effects) };
+  } catch (error) {
+    node.remove();
+    throw error;
+  }
+}
+
+// Clone the real text node so line height, mixed styles, fills and sizing survive.
+async function cloneText(operation, deadlineAt) {
+  if (typeof operation.sourceNodeId !== "string" || typeof operation.parentId !== "string") throw new Error("clone_text requires explicit sourceNodeId and parentId");
+  if (operation.characters !== undefined && typeof operation.characters !== "string") throw new Error("clone_text characters must be a string");
+  if (operation.mirrorFromSource !== undefined && typeof operation.mirrorFromSource !== "boolean") throw new Error("mirrorFromSource must be boolean");
+  const source = await getNode(operation.sourceNodeId);
+  if (source.type !== "TEXT") throw new Error("clone_text source must be a TEXT node");
+  const parent = await parentFor(operation.parentId);
+  if (operation.mirrorFromSource && (!Number.isFinite(parent.width) || parent.width <= 0)) throw new Error("Mirrored text requires a parent with a positive width");
+  await loadExistingTextFonts(source);
+  checkDeadline(deadlineAt);
+  const sourceX = source.x, sourceY = source.y;
+  const node = source.clone();
+  try {
+    parent.appendChild(node);
+    if (operation.characters !== undefined) node.characters = operation.characters;
+    node.name = operation.name === undefined ? node.characters : String(operation.name);
+    node.y = operation.y === undefined ? sourceY : Number(operation.y);
+    node.x = operation.mirrorFromSource ? parent.width - sourceX - node.width : sourceX;
+    if (operation.mirrorFromSource) {
+      node.textAlignHorizontal = source.textAlignHorizontal === "LEFT" ? "RIGHT" : source.textAlignHorizontal === "RIGHT" ? "LEFT" : source.textAlignHorizontal;
+    }
+    if (operation.x !== undefined) node.x = Number(operation.x);
+    if (![node.x, node.y].every(Number.isFinite)) throw new Error("Invalid cloned text position");
+    return { ...nodeSummary(node), sourceNodeId: source.id, mirroredLayout: operation.mirrorFromSource === true };
+  } catch (error) {
+    node.remove();
+    throw error;
+  }
+}
+
+// Copy an existing page-level frame without rebuilding its cropped images or styles.
+async function cloneFrame(operation, deadlineAt) {
+  if (typeof operation.sourceNodeId !== "string" || typeof operation.sourceParentId !== "string" || typeof operation.parentId !== "string") throw new Error("clone_frame requires explicit sourceNodeId, sourceParentId and parentId");
+  const source = await getNode(operation.sourceNodeId);
+  const parent = await parentFor(operation.parentId);
+  if (source.type !== "FRAME" || !source.parent || source.parent.id !== operation.sourceParentId || source.parent.type !== "PAGE" || parent.type !== "PAGE") throw new Error("clone_frame requires a page-level FRAME and an explicit destination PAGE");
+  for (const key of ["width", "height"]) {
+    const expected = operation[key === "width" ? "expectedSourceWidth" : "expectedSourceHeight"];
+    if (expected !== undefined && (typeof expected !== "number" || !Number.isFinite(expected) || Math.abs(source[key] - expected) > 0.01)) throw new Error("Source frame dimensions changed since inspection");
+  }
+  const sourceNodes = [];
+  walk(source, node => sourceNodes.push(node));
+  await Promise.all(sourceNodes.filter(node => node.type === "TEXT").map(loadExistingTextFonts));
+  checkDeadline(deadlineAt);
+  const clone = source.clone();
+  try {
+    parent.appendChild(clone);
+    applyCommon(clone, { ...operation, width: undefined, height: undefined });
+    if (operation.width !== undefined || operation.height !== undefined) {
+      clone.resizeWithoutConstraints(operation.width === undefined ? clone.width : Number(operation.width), operation.height === undefined ? clone.height : Number(operation.height));
+    }
+    const cloneNodes = [];
+    walk(clone, node => cloneNodes.push(node));
+    if (cloneNodes.length !== sourceNodes.length || cloneNodes.some((node, index) => node.type !== sourceNodes[index].type)) throw new Error("Cloned frame structure does not match the source");
+    return {
+      ...nodeSummary(clone), sourceNodeId: source.id,
+      createdNodeIds: cloneNodes.map(node => node.id),
+      nodeMap: cloneNodes.map((node, index) => ({ sourceNodeId: sourceNodes[index].id, ...nodeSummary(node) })),
+    };
+  } catch (error) {
+    clone.remove();
+    throw error;
+  }
+}
+
 function walk(root, callback) {
   callback(root);
   if (!("children" in root)) return;
@@ -209,6 +320,8 @@ function inspectNode(node, depth, counter) {
   }
   if ("fills" in node) result.fills = Array.isArray(node.fills) ? node.fills.map(paintSummary) : node.fills;
   if ("strokes" in node) result.strokes = Array.isArray(node.strokes) ? node.strokes.map(paintSummary) : node.strokes;
+  if ("effects" in node) result.effects = wireValue(node.effects);
+  if (node.type === "VECTOR") result.vectorPaths = wireValue(node.vectorPaths);
   if ("clipsContent" in node) result.clipsContent = node.clipsContent;
   if ("absoluteBoundingBox" in node) result.absoluteBoundingBox = node.absoluteBoundingBox;
   if (counter.includePrototype) {
@@ -510,6 +623,20 @@ async function executeOperation(operation, deadlineAt) {
   checkDeadline(deadlineAt);
   if (!operation || !operation.op) throw new Error("Operation is missing op");
 
+  if (operation.op === "create_vector") return createVector(operation, deadlineAt);
+  if (operation.op === "clone_text") return cloneText(operation, deadlineAt);
+  if (operation.op === "clone_frame") return cloneFrame(operation, deadlineAt);
+  if (operation.op === "set_effects") {
+    if (typeof operation.parentId !== "string" || !Array.isArray(operation.effects) || operation.effects.length > 32) throw new Error("set_effects requires an explicit parentId and at most 32 effects");
+    const node = await getNode(operation.nodeId);
+    if (node.type !== "VECTOR" || !node.parent || node.parent.id !== operation.parentId) throw new Error("set_effects target must be a VECTOR directly inside the declared parentId");
+    if (operation.expectedEffects !== undefined && JSON.stringify(wireValue(node.effects)) !== JSON.stringify(operation.expectedEffects)) throw new Error("Effects changed since inspection; read the target before applying shadows: " + node.id);
+    const previous = wireValue(node.effects);
+    checkDeadline(deadlineAt);
+    node.effects = operation.effects;
+    return { ...nodeSummary(node), previousEffects: previous, effects: wireValue(node.effects) };
+  }
+
   if (operation.op === "create_image") {
     if (typeof operation.base64 !== "string" || operation.base64.length > 4500000) throw new Error("Invalid or oversized image payload");
     const parent = await parentFor(operation.parentId);
@@ -601,6 +728,10 @@ async function execute(command, deadlineAt) {
   if (command.type === "status") {
     return {
       pluginVersion: "2.2.1",
+      vectorCapabilities: { version: 1, create: true, pathsRead: true, shadows: true, gradients: true },
+      textCapabilities: { version: 1, clone: true, mirrorLayout: true, preserveNativeStyles: true },
+      cloneCapabilities: { version: 1, pageFrames: true, descendantIds: true, preserveNativeImagesAndStyles: true },
+      effectCapabilities: { version: 1, setVectorEffects: true, expectedEffectsGuard: true },
       prototypeCapabilities,
       fileKey: figma.fileKey || null,
       currentPage: nodeSummary(figma.currentPage),
