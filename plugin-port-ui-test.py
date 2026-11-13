@@ -1,3 +1,4 @@
+import os
 from playwright.sync_api import sync_playwright, expect
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -13,7 +14,7 @@ def command(port):
 try:
     info=json.loads(fixture.stdout.readline());a,b=info['ports']
     with sync_playwright() as p, ThreadPoolExecutor() as pool:
-        browser=p.chromium.launch(executable_path=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',headless=True)
+        browser=p.chromium.launch(**({'executable_path':os.environ['PR_BROWSER_PATH']} if os.environ.get('PR_BROWSER_PATH') else {}),headless=True)
         page=browser.new_page(viewport={'width':360,'height':240})
         page.add_init_script('''window.savedPorts=[]; window.addEventListener('message', event=>{
           const m=event.data.pluginMessage;if(!m)return;

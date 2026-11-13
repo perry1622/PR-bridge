@@ -1,6 +1,6 @@
 {
   "name": "pr-bridge",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "private": true,
   "type": "module",
   "description": "Local Figma MCP bridge with multi-agent queues and a connection console",

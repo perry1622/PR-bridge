@@ -96,7 +96,7 @@ export function createBridgeServer({ timeoutMs = 120000, pollMs = 25000, connect
       }
       if (req.method === "GET" && url.pathname === "/health") {
         return json(res, 200, {
-          ok: true, service: "PR-bridge", version: "2.2.1", protocol: 2, telemetryVersion: 1,
+          ok: true, service: "PR-bridge", version: "2.2.2", protocol: 2, telemetryVersion: 1,
           port: server.address().port, pid: process.pid, pluginConnected: connected(),
           queuedCommands: queue.length, pendingCommands: pending.size,
           activeClients: new Set([...pending.values(), ...(active ? [active] : [])].map(x => x.clientId)).size,

@@ -166,7 +166,7 @@ const toolDefinitions = [
   },
   {
     name: "figma_apply_operations",
-    description: "按队列串行执行一批 Figma 编辑。多个 Agent 应明确指定 pageId / parentId / nodeId，避免依赖其他 Agent 会改变的当前页面。支持 create_page、create_frame、create_rectangle、create_text、create_vector、clone_text、set、delete_node、clear_page。create_vector 使用原生 Bezier paths，可附 gradientStops 和 shadow；必须声明 parentId。clone_text 声明 sourceNodeId/parentId，原生复制文字样式后替换 characters；mirrorFromSource 仅镜像布局并切换左右对齐，字形保持正向。",
+    description: "按队列串行执行一批 Figma 编辑。多个 Agent 应明确指定 pageId / parentId / nodeId，避免依赖其他 Agent 会改变的当前页面。支持 create_page、create_frame、create_rectangle、create_text、create_vector、clone_text、clone_frame、set_effects、set、delete_node、clear_page。create_vector 使用原生 Bezier paths，可附 gradientStops 和 shadow；必须声明 parentId。clone_text 声明 sourceNodeId/parentId，原生复制文字样式后替换 characters；mirrorFromSource 仅镜像布局并切换左右对齐，字形保持正向。clone_frame 需要 sourceNodeId/sourceParentId/parentId；set_effects 仅修改声明父节点中的 VECTOR，可用 expectedEffects 防止覆盖过期状态。",
     inputSchema: {
       type: "object",
       properties: {
@@ -215,7 +215,7 @@ async function handle(message) {
     return reply(message.id, {
       protocolVersion: message.params?.protocolVersion || "2024-11-05",
       capabilities: { tools: {} },
-      serverInfo: { name: "PR-bridge", version: "2.2.1" },
+      serverInfo: { name: "PR-bridge", version: "2.2.2" },
     });
   }
 

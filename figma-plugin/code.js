@@ -727,7 +727,7 @@ async function execute(command, deadlineAt) {
 
   if (command.type === "status") {
     return {
-      pluginVersion: "2.2.1",
+      pluginVersion: "2.2.2",
       vectorCapabilities: { version: 1, create: true, pathsRead: true, shadows: true, gradients: true },
       textCapabilities: { version: 1, clone: true, mirrorLayout: true, preserveNativeStyles: true },
       cloneCapabilities: { version: 1, pageFrames: true, descendantIds: true, preserveNativeImagesAndStyles: true },
